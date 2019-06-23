@@ -5,4 +5,4 @@ Code is heavily borrowed from https://hansenjohnson.org/post/interactive-maps-in
 
 Note that the input is a set of .csv files specifying "City" and "Country" or "State" in separate columns. The scripts should fill in everything else.
 
-Lat/Lon are retrieved using OpenStreetMap(https://www.openstreetmap.org/)
+Lat/Lon are retrieved using [OpenStreetMap](https://www.openstreetmap.org/)
