@@ -18,7 +18,7 @@ library(htmlwidgets) # To save map as an html widget
 # library(mapview) # For saving static map images
 
 # Set base directory
-username<-"Tiamat"
+username<-"510fu"
 rootdir<-paste0("C:\\Users\\",username,"\\Dropbox\\GIT\\")
 basedir<-paste0(rootdir,"Travel_map\\")
 setwd(basedir)
@@ -52,8 +52,8 @@ currentlyLive<-subset(lived.df,City=="Santa Cruz")
 
 # Make an icon for where you currently live
 customIcons <- iconList(
-  house = makeIcon("home-solid.svg", 18, 18),
-  hospital = makeIcon("hospital-solid.svg", 18, 18)
+  house = makeIcon("home-solid.png", 18, 18),
+  hospital = makeIcon("hospital-solid.png", 18, 18)
 )
 
 # Write a function to process location lists.
@@ -92,10 +92,10 @@ getSpatialData<-function(df,
         
         # Combine city + state/country for geolocating
         tofind$Merged<-paste(tofind[,locationval],tofind[,sortval],sep=", ")
-
+        
         coords<-geocode_OSM(enc2utf8(as.character(tofind$Merged)))
-        tofind$Lon<-coords$lon
-        tofind$Lat<-coords$lat
+        tofind$Lon<-coords$coords[1]
+        tofind$Lat<-coords$coords[2]
         rm(coords)
         
         df<-rbind(found,tofind)
