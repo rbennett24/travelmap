@@ -1,24 +1,26 @@
-# https://hansenjohnson.org/post/interactive-maps-in-r/
-# https://rstudio.github.io/leaflet/
-# https://bhaskarvk.github.io/user2017.geodataviz/notebooks/03-Interactive-Maps.nb.html
-
-# https://rstudio.github.io/leaflet/map_widget.html
-# https://hansenjohnson.org/post/bathymetric-maps-in-r/
-# https://stackoverflow.com/questions/32504880/street-address-to-geolocation-lat-long
-# https://www.jessesadler.com/post/geocoding-with-r/
-
-
 # Load libraries
+library(tidyverse)
 library(leaflet) # For map creation
-library(ggmap) # For geocoding/geolocating
 library(tmaptools) # For geocoding with Open Street Maps
-library(geojsonio) # For manipulating map data
-library(rgdal) # For map data
+library(sf) # For working with shape files
 library(htmlwidgets) # To save map as an html widget
-# library(mapview) # For saving static map images
+library(readr) # For reading CSVs; probably not necessary
+
+
+# For high-resolution outlines of countries and states
+# Needs to be installed in atypical ways; pick one of the following
+# library(remotes)
+# remotes::install_github("ropensci/rnaturalearthhires")
+# 
+# install.packages("rnaturalearthhires", repos = "https://ropensci.r-universe.dev", type = "source")
+# install.packages("C:/Users/Ryan Bennett 2/Downloads/rnaturalearthhires_0.2.1.tar.gz", repos = NULL, type="source")
+library(rnaturalearth)
+
 
 # Set base directory
-username<-"510fu"
+# username<-"rbennett"
+# rootdir<-paste0("D:\\",username,"\\Dropbox\\GIT\\")
+username<-"Tiamat"
 rootdir<-paste0("C:\\Users\\",username,"\\Dropbox\\GIT\\")
 basedir<-paste0(rootdir,"Travel_map\\")
 setwd(basedir)
@@ -26,107 +28,104 @@ setwd(basedir)
 # Set directory where you eventually want to save the html file
 htmldir<-paste0(rootdir,"professional-webpage\\")
 
-# Create a base dataframe that you'll use for storing US locations
-df.base<-data.frame(matrix(ncol=4,nrow=0))
-colnames(df.base)<-c("City","State","Lon","Lat")
 
-# Create a list of cities, and get coordinates
-born<-c("Santa Rosa","CA")
-born.df<-df.base
-born.df[1,]<-born
-born.df$Merged<-paste(born.df[,"City"],born.df[,"State"],sep=", ")
-born.coords<-geocode_OSM(enc2utf8(born.df$Merged)) # Get spatial coordinates from Open Street Maps. Encode to UTF8 for special characters.
-born.df$Lon<-born.coords$coords[1]
-born.df$Lat<-born.coords$coords[2]
+# Save the local encoding of files on your windows machine so you can
+# use it to force UTF-8 encoding when reading CSV files.
+# Probably not needed/overkill, but you've run into encoding 
+# problems before with accented characters so we do this.
+winencoding <- "ISO-8859-1"
 
-# Save coordinates for reference
-# write.csv(born.df,"Data/Born.csv",row.names=F)
 
-# In general, it's probably easier to automate this by keeping a .csv file with information about locations, then loading it.
-born.df<-read.csv("Data/Born.csv",header=T)
-lived.df<-read.csv("Data/Lived.csv",header=T)
-visited.us.df<-read.csv("Data/Visited_US.csv",header=T)
-visited.internat.df<-read.csv("Data/Visited_international.csv",header=T)
 
-currentlyLive<-subset(lived.df,City=="Santa Cruz")
+# Read in list of locations you've lived in, and that you've visited in the US and internationally.
+# These CSV files should all have the column structure {"City","State","Lon","Lat","Merged"} for US locations, 
+# e.g. {Huntsville,AL,-86.5861037,34.7303688,"Huntsville, AL"},
+# and {"City","Country","Lon","Lat","Merged"} for international locations,
+# e.g. {Melbourne,Australia,144.9631608,-37.8142176,"Melbourne, Australia"}
+# The 'Merged' column gets used for geocoding spatial coordinates of locations
+# that you've newly entered into your Excel-format CSV spreadsheets as City, State/Country alone.
 
-# Make an icon for where you currently live
-customIcons <- iconList(
-  house = makeIcon("home-solid.png", 18, 18),
-  hospital = makeIcon("hospital-solid.png", 18, 18)
-)
+# Notice that we are explicitly demanding a specific encoding here, rather than letting readr::read_csv guess the local machine encoding, just in case.
+lived.df<-read_csv("Data/Lived.csv",locale=locale(encoding=winencoding))
+visited.us.df<-read_csv("Data/Visited_US.csv",locale=locale(encoding=winencoding))
+visited.internat.df<-read_csv("Data/Visited_international.csv",locale=locale(encoding=winencoding))
 
-# Write a function to process location lists.
+
+
+# # Make sure that every column of these dataframes is treated as UTF-8, if needed.
+# forceUTF8 <- function(df){
+#   df %>% mutate(across(everything(),~ iconv(.x,from=winencoding,to="UTF-8")))
+# }
+# lived.df <- forceUTF8(lived.df)
+# visited.us.df <- forceUTF8(visited.us.df)
+# visited.internat.df <- forceUTF8(visited.internat.df)
+
+
+
+# Write a function to get spatial coordinates for any locations in these spreadsheets which currently lack them
 getSpatialData<-function(df,
                          locationval="City",
-                         sortval="State",
-                         checkfile=T,
-                         filetocheck="./Data/Lived.csv"){
-  
-  if (checkfile==F){
-  
-      df$Merged<-paste(df[,locationval],df[,sortval],sep=", ") # Combine city + state/country for geolocating
-      
-      df<-df[order(df[,sortval],df[,locationval]),] # If you're compulsive and want to sort your dataframe...
-      
-      # It would be better to use mutate_geocode() for data frames, but there's some dumb problem I don't want to deal with.
-      # https://github.com/dkahle/ggmap/issues/106
-      coords<-geocode_OSM(enc2utf8(as.character(df$Merged)))
-      df$Lon<-coords$coords[1]
-      df$Lat<-coords$coords[2]
-      rm(coords)
-      return(df)
+                         sortval="State"){
 
-  }else{
-      
-      infile<-read.csv(filetocheck,header=T)
-      tofind<-subset(infile,is.na(infile$Lat)) # If lat isn't yet specified
-      
+      tofind<-subset(df,is.na(df$Lat)) # If lat isn't yet specified
+
       if (nrow(tofind)==0){
         # Do nothing
-        return(infile)
-      }else{
-        
-        # Already processed rows
-        found<-subset(infile,!(is.na(infile$Lat)))
-        
-        # Combine city + state/country for geolocating
-        tofind$Merged<-paste(tofind[,locationval],tofind[,sortval],sep=", ")
-        
-        coords<-geocode_OSM(enc2utf8(as.character(tofind$Merged)))
-        tofind$Lon<-coords$coords[1]
-        tofind$Lat<-coords$coords[2]
-        rm(coords)
-        
-        df<-rbind(found,tofind)
-        # If you're compulsive and want to sort your dataframe...
-        df<-df[order(df[,sortval],df[,locationval]),]
-        
-        # This creates compound labels for locations that you had to enter lat/lon for manually.
-        df$Merged<-paste(df[,locationval],df[,sortval],sep=", ")
         return(df)
-      }
-    }
+      }else{
+
+        # Already processed rows
+        found<-subset(df,!(is.na(df$Lat)))
+
+        # Combine city + state/country for geolocating
+        # We use unite() rather than paste() because
+        # paste() now has some weird behaviors that break this, maybe
+        # because of City/State/Country entries with a space in them.
+        # tofind$Merged<-paste(tofind[,locationval],tofind[,sortval],sep=", ")
+        tofind <- tofind %>% unite(Merged,c(locationval,sortval),remove=F,sep=", ") %>%
+                             relocate(Merged,.after=Lat)
+        
+
+        # Get spatial coordinates for any locations missing those coordinates.
+        coords<-geocode_OSM(tofind$Merged,as.data.frame=T)
+
+        tofind$Lon<-coords[,"lon"]
+        tofind$Lat<-coords[,"lat"]
+        rm(coords)
+
+        df.out<-rbind(found,tofind)
+        # If you're compulsive and want to sort your dataframe.
+        # https://stackoverflow.com/questions/27034655/how-to-use-dplyrarrangedesc-when-using-a-string-as-column-name
+        df.out <- df.out %>% arrange(!!sym(sortval),!!sym(locationval))
+        
+        return(df.out)
   }
+}
+
+# Update location lists
+lived.df <- getSpatialData(lived.df)
+visited.us.df<-getSpatialData(visited.us.df)
+visited.internat.df<-getSpatialData(visited.internat.df,sortval="Country")
 
 
-lived.df<-getSpatialData(lived.df)
-write.csv(lived.df,"./Data/Lived.csv",row.names = F)
 
-visited.us.df<-getSpatialData(visited.us.df,filetocheck="./Data/Visited_US.csv")
-write.csv(visited.us.df,"./Data/Visited_US.csv",row.names = F)
+#############
+# Save updated CSVs, using the same encoding that you loaded them with. 
+write.csv(lived.df,"./Data/Lived.csv",row.names = F, fileEncoding = winencoding)
+write.csv(visited.us.df,"./Data/Visited_US.csv",row.names = F, fileEncoding = winencoding)
+write.csv(visited.internat.df,"./Data/Visited_international.csv",row.names = F, fileEncoding = winencoding)
 
-visited.internat.df<-getSpatialData(visited.internat.df,sortval="Country",filetocheck="./Data/Visited_international.csv")
-write.csv(visited.internat.df,"./Data/Visited_international.csv",row.names = F)
 
-# Now create a base map.
+# Create base map of world.
 map <- leaflet() %>%
   
   # Add basemap from a free set given by providers
   # https://leaflet-extras.github.io/leaflet-providers/preview/index.html
   # https://github.com/leaflet-extras/leaflet-providers
   # addProviderTiles(providers$Esri.NatGeoWorldMap) # I like this but it's kind of busy
-  addProviderTiles(providers$Esri.WorldPhysical) %>%
+  addProviderTiles(providers$Esri.WorldPhysical
+                   # options = providerTileOptions(maxZoom = 19)
+                   ) %>%
   
   # focus map in a certain area / zoom level when it opens
   # Santa Cruz, CA
@@ -134,67 +133,66 @@ map <- leaflet() %>%
   # setView(lng = 0, lat = 0, zoom = 3)
   setView(lng = -10, lat = 23.3, zoom = 2) # I like the centering here
 
-# Check map
-# map
 
+# Get US states and add them to the map
+states <- ne_states(country="united states of america",
+                    returnclass = "sf")
 
-# Load in polygons for US states
-# http://eric.clst.org/tech/usgeojson/
-# https://github.com/kate-harrison/west/blob/master/west/data/Region/UnitedStates/Boundaries/cb_2013_us_state_20m/cb_2013_us_state_20m.shp
-states <- geojson_read("data/gz_2010_us_040_00_500k.json", what = "sp")
-
-# Load in polygons for countries
-# http://www.naturalearthdata.com/downloads/110m-cultural-vectors/110m-admin-0-countries/
-# http://thematicmapping.org/downloads/world_borders.php
-countries <- readOGR("./Data/ne_110m_admin_0_countries/ne_110m_admin_0_countries.shp")
-# summary(countries)
-
-##################
-# Here, you want to make a list of states you have/haven't lived in or visited, so that you can color them differently with the polygon layers.
-# https://stackoverflow.com/questions/5411979/state-name-to-abbreviation-in-r
-
-# This stores saved states, and converts them from abbreviations to full names!
-states.visited<-state.name[match(visited.us.df$State,state.abb)]
-states.visited.poly<-subset(states,NAME%in%states.visited)
-
-# Do the same thing for countries
-countries.visited.poly<-subset(countries,NAME%in%visited.internat.df$Country)
-
-
-
-# Plot!
-
-# Start with US states 
-# https://rstudio.github.io/leaflet/choropleths.html
-# https://rstudio.github.io/leaflet/shapes.html
 map <- map %>% addPolygons(data=states,
-                    weight = 1,
-                    smoothFactor = 0.5,
-                    opacity = 1.0,
-                    color = "white"
-                    ) %>%
+                           weight = 1,
+                           smoothFactor = 0.5,
+                           opacity = 1.0,
+                           color = "white"
+)
+
+
+# Color in states that you've visited
+# First, take abbreviations of states (as in your CSV file) and convert to full names.
+states.visited<-state.name[match(visited.us.df$State,state.abb)]
+states.visited.poly<-subset(states,name_en %in% states.visited)
+
+map <- map %>% addPolygons(data=states.visited.poly,
+            weight = 1,
+            smoothFactor = 0.5,
+            opacity = 1.0,
+            color = "white",
+            fillOpacity = 0.25,
+            fillColor="blue"
+            )
+
+
+# Get national boundaries and add them to the map.
+# We do this after adding US states (in white) so that US national boundary (in black) is visible too.
+countries <- ne_countries(scale = "medium", # Use "large" for more precision larger filesize
+                          type = 'map_units',
+                          returnclass = "sf")
+
+map <- map %>% addPolygons(data=countries,
+                           weight = 1,
+                           smoothFactor = 0.5,
+                           opacity = 0.6,
+                           color = "black"
+)
+
+
+
+# Color in countries that you've visited
+countries.visited.poly<-subset(countries,#name %in% visited.internat.df$Country|
+                                         #sovereignt %in% visited.internat.df$Country|
+                                         # admin %in% visited.internat.df$Country |
+                                         subunit %in% visited.internat.df$Country
+                                         )
+
+if (length(unique(countries.visited.poly$subunit)) < length(unique(visited.internat.df$Country))){
+
+  print("WARNING: some of the countries that you've visited are not being located for the purpose of coloring those countries in on the map. These are:")
   
-        # Color in states that you've visited
-        addPolygons(data=states.visited.poly,
-                    weight = 1,
-                    smoothFactor = 0.5,
-                    opacity = 1.0,
-                    color = "white",
-                    fillOpacity = 0.25,
-                    fillColor="blue"
-                    ) %>%
-  
-        # Add in polygons for countries, except the US, because
-        # the state shapefiles may not align with the country
-        # shapefile
-        addPolygons(data=subset(countries,NAME!="United States"),
-                    weight = 1,
-                    smoothFactor = 0.5,
-                    opacity = 0.6,
-                    color = "black"
-        ) %>%
-        
-        # Color in countries that you've visited
+  print(subset(unique(visited.internat.df$Country),
+        !(unique(countries.visited.poly$subunit) %in% unique(visited.internat.df$Country))))
+
+}
+
+map <- map %>% 
         addPolygons(data=countries.visited.poly,
                     weight = 1,
                     smoothFactor = 0.5,
@@ -202,87 +200,95 @@ map <- map %>% addPolygons(data=states,
                     color = "black",
                     fillOpacity = 0.25,
                     fillColor="yellow"
-        ) %>%
-        
-  # Add points for places you've visited in the US (states only)
-  addCircleMarkers(data = visited.us.df, ~Lon, ~Lat,
-                   weight = 0.5,
-                   col = 'black', 
-                   fillColor = "darkred",
-                   radius = 9, 
-                   fillOpacity = 0.6,
-                   stroke = T,
-                   label = ~Merged, 
-                   group = 'Visited (US)',
-                   labelOptions = labelOptions(textsize = "15px")) %>%
-  
-        # Add points for places you've visited internationally
-        addCircleMarkers(data = visited.internat.df, ~Lon, ~Lat,
-                         weight = 0.5,
-                         col = 'black', 
-                         fillColor = "darkmagenta",
-                         radius = 9, 
-                         fillOpacity = 0.6, 
-                         stroke = T,
-                         label = ~Merged, 
-                         group = 'Visited (international)',
-                         labelOptions = labelOptions(textsize = "15px")) %>% 
-        
-        # Add points for places you've lived
-        addCircleMarkers(data = lived.df, ~Lon, ~Lat,
-                         weight = 0.5,
-                         col = 'black', 
-                         fillColor = 'darkslategrey',
-                         radius = 9, 
-                         fillOpacity = 0.6, 
-                         stroke = T, 
-                         label = ~Merged, 
-                         group = 'Lived in',
-                         labelOptions = labelOptions(textsize = "15px")) %>% 
-  
-        # Add in current home
-        # TO DO: change the marker icon
-        #
-        # https://rstudio.github.io/leaflet/markers.html
-        # https://fontawesome.com/icons/home?style=solid
-        addMarkers(data=currentlyLive, ~Lon, ~Lat,
-                  label=paste("Current home:",currentlyLive$Merged),
-                  icon = ~customIcons["house"],
-                  labelOptions = labelOptions(textsize = "15px")
-                  ) %>%
-              
-        # Add in birthplace
-        addMarkers(data=born.df, ~Lon, ~Lat,
-                   label=paste("Birthplace:",born.df$Merged),
-                   icon = ~customIcons["hospital"],
-                   labelOptions = labelOptions(textsize = "15px")
-        ) %>%
-  
-        # Legend for controlling plotting layers
-        addLayersControl(overlayGroups = c('Lived in',
-                                           'Visited (US)',
-                                           "Visited (international)"),
-                      options = layersControlOptions(collapsed = FALSE),
-                         position = 'topright')
+        )
 
-# list groups to hide on startup
-# hideGroup(c('Visited (US)'))
+# Add points for places you've visited in the US (states only)
+map <- map %>% addCircleMarkers(data = visited.us.df, ~Lon, ~Lat,
+                 weight = 0.5,
+                 col = 'black',
+                 fillColor = "darkred",
+                 radius = 9,
+                 fillOpacity = 0.6,
+                 stroke = T,
+                 label = ~Merged,
+                 group = 'Visited (US)',
+                 # clusterOptions = markerClusterOptions(), # Collapse points that are close together
+                 labelOptions = labelOptions(textsize = "15px"))
 
-        
-# Check the maps
+# Add points for places you've visited internationally
+map <- map %>% addCircleMarkers(data = visited.internat.df, ~Lon, ~Lat,
+                 weight = 0.5,
+                 col = 'black',
+                 fillColor = "darkmagenta",
+                 radius = 9,
+                 fillOpacity = 0.6,
+                 stroke = T,
+                 label = ~Merged,
+                 group = 'Visited (international)',
+                 # clusterOptions = markerClusterOptions(), # Collapse points that are close together
+                 labelOptions = labelOptions(textsize = "15px"))
+
+
+# Make an icon for where you currently live, and where you were born,
+# and add them to the map.
+customIcons <- iconList(
+  house = makeIcon("home-solid.png", 18, 18),
+  hospital = makeIcon("hospital-solid.png", 18, 18)
+)
+
+currentlyLive<-subset(lived.df,City=="Santa Cruz")
+
+map <- map %>% addMarkers(data=currentlyLive, ~Lon, ~Lat,
+                          label=paste("Current home:",currentlyLive$Merged),
+                          icon = ~customIcons["house"],
+                          labelOptions = labelOptions(textsize = "15px")
+)
+
+
+# Add your birthplace.
+born.df<-data.frame(matrix(ncol=4,nrow=0))
+colnames(born.df)<-c("City","State","Lon","Lat")
+born<-c("Santa Rosa","CA",NA,NA)
+born.df[1,]<-born
+born.df <- getSpatialData(born.df)
+born.df
+
+map <- map %>%addMarkers(data=born.df, ~Lon, ~Lat,
+                         label=paste("Birthplace:",born.df$Merged),
+                         icon = ~customIcons["hospital"],
+                         labelOptions = labelOptions(textsize = "15px")
+)
+
+
+# Add points for places you've lived
+map <- map %>% addCircleMarkers(data = lived.df, ~Lon, ~Lat,
+                                weight = 0.5,
+                                col = 'black',
+                                fillColor = 'darkslategrey',
+                                radius = 9,
+                                fillOpacity = 0.6,
+                                stroke = T,
+                                label = ~Merged,
+                                group = 'Lived in',
+                                # clusterOptions = markerClusterOptions(), # Collapse points that are close together
+                                labelOptions = labelOptions(textsize = "15px"))
+
+
+
+# Legend for controlling plotting layers
+map <- map %>% addLayersControl(overlayGroups = c('Lived in',
+                                   'Visited (US)',
+                                   "Visited (international)"),
+              options = layersControlOptions(collapsed = FALSE),
+                 position = 'topright')
+
+
+# Check map
 map
-
 
 # Save your work
 save.image("mapcode.Rdata")
 
-
 # Save a stand-alone, interactive map as an html file
 saveWidget(widget = map, file = 'travelmap.html', selfcontained = T)
 file.copy('travelmap.html',paste0(htmldir,'travelmap.html'),overwrite=T)
-
-
-# Save a snapshot as a png file
-# mapshot(map, file = 'travelmap.png')
-
-#################################################
